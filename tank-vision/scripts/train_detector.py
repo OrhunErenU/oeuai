@@ -5,8 +5,22 @@ Kullanim:
 """
 
 import argparse
+import sys
+from pathlib import Path
+
+# Proje kokunu sys.path'e ekle (import sorunlarini onler)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 from ultralytics import YOLO
+
+
+def _resolve_data_path(data: str) -> str:
+    """Veri seti YAML yolunu mutlak yola cevir."""
+    p = Path(data)
+    if not p.is_absolute():
+        p = _PROJECT_ROOT / p
+    return str(p.resolve())
 
 
 def train(
@@ -43,6 +57,8 @@ def train(
     print(f"  Batch:   {batch}")
     print(f"  Device:  {device}")
     print("=" * 60)
+
+    data = _resolve_data_path(data)
 
     model = YOLO(model_size)
 

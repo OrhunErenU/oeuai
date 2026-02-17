@@ -1,7 +1,7 @@
 # Tank Vision AI - YOLO Veri Seti Tanimi
 # ========================================
 
-path: ./datasets/tank_vision
+path: C:/Users/orhun/opus ai/.claude/worktrees/nervous-greider/tank-vision/datasets/tank_vision
 train: images/train
 val: images/val
 test: images/test

@@ -12,8 +12,20 @@ Veri seti yapisi (ImageFolder):
 """
 
 import argparse
+import sys
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 from ultralytics import YOLO
+
+
+def _resolve_path(p: str) -> str:
+    path = Path(p)
+    if not path.is_absolute():
+        path = _PROJECT_ROOT / path
+    return str(path.resolve())
 
 
 def train(
@@ -32,6 +44,7 @@ def train(
     print(f"  Veri: {data}")
     print("=" * 60)
 
+    data = _resolve_path(data)
     model = YOLO(model_size)
 
     model.train(
@@ -65,4 +78,13 @@ if __name__ == "__main__":
     parser.add_argument("--name", default="human_cls_v1")
     args = parser.parse_args()
 
-    train(**vars(args))
+    train(
+        data=args.data,
+        model_size=args.model,
+        epochs=args.epochs,
+        imgsz=args.imgsz,
+        batch=args.batch,
+        device=args.device,
+        project=args.project,
+        name=args.name,
+    )

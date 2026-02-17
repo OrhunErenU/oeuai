@@ -7,8 +7,12 @@ sonuclari JSON/video olarak kaydeder.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 import cv2
 
