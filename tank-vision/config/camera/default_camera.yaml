@@ -1,0 +1,15 @@
+# Kamera kalibrasyon parametreleri
+# calibrate_camera.py ile otomatik ayarlanir
+# =============================================
+
+focal_length_px: null
+principal_point:
+  x: null
+  y: null
+distortion_coeffs: []
+sensor_width_mm: null
+resolution:
+  width: 1920
+  height: 1080
+hfov_deg: 60.0
+vfov_deg: 34.0

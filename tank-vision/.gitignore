@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ML artifacts
+runs/
+wandb/
+*.pt
+*.onnx
+*.engine
+*.tflite
+!models/weights/.gitkeep
+
+# Datasets (large files)
+datasets/
+*.zip
+*.tar.gz
+*.tar
+
+# System
+.DS_Store
+Thumbs.db
+*.log
+
+# Environment
+.env

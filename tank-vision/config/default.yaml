@@ -1,0 +1,70 @@
+# Tank Vision AI - Ana Konfigurasyon
+# ===================================
+
+system:
+  device: "cuda:0"
+  fp16: true
+  imgsz: 640
+  conf_thresh: 0.25
+  iou_thresh: 0.45
+  max_det: 100
+
+# Model agirliklari
+models:
+  detector: "models/weights/detector_best.pt"
+  weapon_classifier: "models/weights/weapon_cls_best.pt"
+  tank_classifier: "models/weights/tank_cls_best.pt"
+  human_classifier: "models/weights/human_cls_best.pt"
+  foe_classifier: "models/weights/foe_cls_best.pt"
+  turret_estimator: "models/weights/turret_est_best.pt"
+
+# Nesne takip
+tracker:
+  type: "botsort"
+  config: "config/tracker/botsort.yaml"
+  track_buffer: 60  # 2 saniye @ 30fps
+
+# Mesafe tahmini
+distance:
+  camera_focal_length: null  # Kalibrasyon ile ayarla
+  camera_sensor_width: null
+  camera_hfov: 60.0  # Yatay FOV (derece)
+  camera_vfov: 34.0  # Dikey FOV (derece)
+  camera_tilt: 0.0    # Kamera egim acisi (derece)
+  camera_height: 2.5  # Kamera yerden yukseklik (metre)
+  image_width: 640
+  image_height: 640
+
+# Dost/Dusman konfigurasyon
+friend_foe:
+  friendly_tank_models:
+    - "m1_abrams"
+    - "leopard_2"
+    - "altay"
+    - "k2_black_panther"
+  friendly_markings: []
+
+# Tehdit degerlendirme
+threat:
+  drone_danger_distance: 500
+  tank_danger_distance: 2000
+  human_danger_distance: 200
+  weapon_danger_distance: 300
+  vehicle_danger_distance: 1000
+  aircraft_danger_distance: 3000
+  bird_danger_distance: 0
+  speed_threat_multiplier: 1.5
+
+# HUD goruntusu
+display:
+  show_distance: true
+  show_speed: true
+  show_threat_level: true
+  show_classification: true
+  show_track_id: true
+  show_altitude: true
+  show_time_to_reach: true
+  show_foe_status: true
+  show_turret_warning: true
+  hud_opacity: 0.7
+  dashboard_position: "top_right"

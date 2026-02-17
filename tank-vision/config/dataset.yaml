@@ -1,0 +1,17 @@
+# Tank Vision AI - YOLO Veri Seti Tanimi
+# ========================================
+
+path: ./datasets/tank_vision
+train: images/train
+val: images/val
+test: images/test
+
+nc: 7
+names:
+  0: drone
+  1: tank
+  2: human
+  3: weapon
+  4: vehicle
+  5: aircraft
+  6: bird
