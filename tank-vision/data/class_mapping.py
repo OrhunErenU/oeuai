@@ -71,11 +71,12 @@ THREAT_LEVELS = {
 }
 
 # COCO -> Ana sinif esleme (download/convert islemleri icin)
+# Anahtarlar COCO category_id degerleridir
 COCO_TO_PRIMARY = {
-    0: 2,   # person -> human
-    2: 4,   # car -> vehicle
-    5: 4,   # bus -> vehicle
-    7: 4,   # truck -> vehicle
-    14: 6,  # bird -> bird
-    4: 5,   # airplane -> aircraft
+    1: 2,   # person -> human
+    3: 4,   # car -> vehicle
+    5: 5,   # airplane -> aircraft
+    6: 4,   # bus -> vehicle
+    8: 4,   # truck -> vehicle
+    16: 6,  # bird -> bird
 }

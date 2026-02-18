@@ -4,7 +4,7 @@
 # Eger farkli bir konumda ise, ortam degiskeni TANK_VISION_DATA ile ayarlayabilirsiniz:
 #   set TANK_VISION_DATA=D:/datasets/tank_vision
 
-path: ../datasets/tank_vision
+path: datasets/tank_vision
 train: images/train
 val: images/val
 test: images/test
