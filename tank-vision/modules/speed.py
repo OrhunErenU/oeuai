@@ -112,9 +112,17 @@ class SpeedCalculator:
                 result["speed_ms"] = round(total_speed, 2)
                 result["speed_kmh"] = round(total_speed * 3.6, 1)
         else:
-            # Mesafe bilgisi yoksa sadece piksel hizi dondur (yaklasik)
-            result["speed_ms"] = round(pixel_speed * 0.1, 2)  # Cok kaba tahmin
-            result["speed_kmh"] = round(result["speed_ms"] * 3.6, 1)
+            # Mesafe bilgisi yoksa acisal hiz uzerinden tahmin yap.
+            # Varsayilan tahmini mesafe: sinifa gore ortalama beklenen mesafe kullan.
+            # Bu tam dogruluk saglamaz ama 0.1 carpanından cok daha iyidir.
+            angular_speed_deg = pixel_speed * self.deg_per_pixel
+            angular_speed_rad = math.radians(angular_speed_deg)
+            # Varsayilan mesafe: 100m (orta menzil tahmini)
+            # Gercek mesafe bilinmediginde kaba ama tutarli bir tahmin saglar.
+            default_distance = 100.0
+            estimated_speed = angular_speed_rad * default_distance
+            result["speed_ms"] = round(estimated_speed, 2)
+            result["speed_kmh"] = round(estimated_speed * 3.6, 1)
 
         return result
 

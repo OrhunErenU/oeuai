@@ -118,6 +118,9 @@ class ThreatAssessor:
             elif detection.weapon_type == "sniper":
                 score += 10
                 reasons.append("Keskin nisanci - yuksek menzil")
+            elif detection.weapon_type == "machine_gun":
+                score += 10
+                reasons.append("Makineli tufek - yuksek ates gucu")
 
         # === Kural 6: Asker tespiti ===
         if class_name == "human":
@@ -128,17 +131,41 @@ class ThreatAssessor:
                 score -= 10
                 reasons.append("Sivil - dusuk tehdit")
 
-        # === Kural 7: Dron ulasma suresi ===
-        if class_name == "drone" and detection.time_to_reach is not None:
-            if detection.time_to_reach < 5:
-                score += 40
-                reasons.append(f"DRON {detection.time_to_reach:.1f}sn icinde ulasacak!")
-            elif detection.time_to_reach < 10:
-                score += 35
-                reasons.append(f"Dron {detection.time_to_reach:.1f}sn icinde ulasacak")
-            elif detection.time_to_reach < 30:
+        # === Kural 7: Dron kapsamli tehdit analizi ===
+        if class_name == "drone":
+            # 7a: Dron ulasma suresi
+            if detection.time_to_reach is not None:
+                if detection.time_to_reach < 3:
+                    score += 45
+                    reasons.append(f"ACIL! DRON {detection.time_to_reach:.1f}sn icinde ulasacak!")
+                elif detection.time_to_reach < 5:
+                    score += 40
+                    reasons.append(f"DRON {detection.time_to_reach:.1f}sn icinde ulasacak!")
+                elif detection.time_to_reach < 10:
+                    score += 35
+                    reasons.append(f"Dron {detection.time_to_reach:.1f}sn icinde ulasacak")
+                elif detection.time_to_reach < 30:
+                    score += 20
+                    reasons.append(f"Dron {detection.time_to_reach:.0f}sn icinde ulasacak")
+
+            # 7b: Dron alcak ucus (kamikaze/FPV dron gostergesi)
+            if detection.altitude_m is not None:
+                if detection.altitude_m < 20:
+                    score += 25
+                    reasons.append(f"Dron cok alcak: {detection.altitude_m:.0f}m (FPV/kamikaze riski)")
+                elif detection.altitude_m < 50:
+                    score += 15
+                    reasons.append(f"Dron alcak ucuyor: {detection.altitude_m:.0f}m")
+
+            # 7c: Yuksek hizli dron (FPV dron gostergesi: >60km/h)
+            if detection.speed_kmh > 60 and detection.approaching:
                 score += 20
-                reasons.append(f"Dron {detection.time_to_reach:.0f}sn icinde ulasacak")
+                reasons.append(f"Yuksek hizli dron: {detection.speed_kmh:.0f}km/h (FPV riski)")
+
+            # 7d: Dron dusman ise ek tehdit
+            if detection.foe_status == "foe":
+                score += 10
+                reasons.append("Dusman dron tespit edildi")
 
         # === Kural 8: Ucak tehdit ===
         if class_name == "aircraft":
@@ -148,7 +175,16 @@ class ThreatAssessor:
                 score += 20
                 reasons.append(f"Ucak {detection.time_to_reach:.0f}sn icinde ulasacak")
 
-        # === Kural 9: Dusman tank ===
+        # === Kural 9: Arac yaklasma tehdidi ===
+        if class_name == "vehicle" and detection.approaching:
+            if detection.foe_status == "foe":
+                score += 15
+                reasons.append("Dusman araci yaklasıyor")
+            elif detection.foe_status == "unknown" and detection.speed_kmh > 50:
+                score += 10
+                reasons.append(f"Kimliksiz arac hizla yaklasıyor: {detection.speed_kmh:.0f}km/h")
+
+        # === Kural 10: Dusman tank ===
         if class_name == "tank" and detection.foe_status == "foe":
             score += 10  # Ek bonus - dusman tank her zaman kritik
             if detection.tank_model:

@@ -32,15 +32,18 @@ class TankClassifier:
         if cropped_image.size == 0:
             return "unknown", 0.0
 
-        results = self.model.predict(
-            source=cropped_image,
-            device=self.device,
-            verbose=False,
-        )
+        try:
+            results = self.model.predict(
+                source=cropped_image,
+                device=self.device,
+                verbose=False,
+            )
 
-        probs = results[0].probs
-        class_id = probs.top1
-        confidence = float(probs.top1conf.item())
-        class_name = self.classes.get(class_id, "unknown")
+            probs = results[0].probs
+            class_id = probs.top1
+            confidence = float(probs.top1conf.item())
+            class_name = self.classes.get(class_id, "unknown")
 
-        return class_name, confidence
+            return class_name, confidence
+        except (RuntimeError, Exception):
+            return "unknown", 0.0

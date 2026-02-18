@@ -79,24 +79,27 @@ class FoeClassifier:
         if cropped_image.size == 0:
             return "unknown", 0.0
 
-        results = self.model.predict(
-            source=cropped_image,
-            device=self.device,
-            verbose=False,
-        )
+        try:
+            results = self.model.predict(
+                source=cropped_image,
+                device=self.device,
+                verbose=False,
+            )
 
-        probs = results[0].probs
-        class_id = probs.top1
-        confidence = float(probs.top1conf.item())
-        class_name = self.classes.get(class_id, "unknown")
+            probs = results[0].probs
+            class_id = probs.top1
+            confidence = float(probs.top1conf.item())
+            class_name = self.classes.get(class_id, "unknown")
 
-        # Dusuk guvenli dusman tahminlerini "unknown" olarak isaretle
-        # (yanlis dusman tespiti tehlikeli)
-        if class_name == "foe" and confidence < 0.70:
-            return "unknown", confidence
+            # Dusuk guvenli dusman tahminlerini "unknown" olarak isaretle
+            # (yanlis dusman tespiti tehlikeli, yuksek esik)
+            if class_name == "foe" and confidence < 0.65:
+                return "unknown", confidence
 
-        # Dusuk guvenli dost tahminlerini de "unknown" olarak isaretle
-        if class_name == "friend" and confidence < 0.60:
-            return "unknown", confidence
+            # Dusuk guvenli dost tahminlerini de "unknown" olarak isaretle
+            if class_name == "friend" and confidence < 0.55:
+                return "unknown", confidence
 
-        return class_name, confidence
+            return class_name, confidence
+        except (RuntimeError, Exception):
+            return "unknown", 0.0

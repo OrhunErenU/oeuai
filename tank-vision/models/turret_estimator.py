@@ -58,21 +58,50 @@ class TurretEstimator:
 
         return self._geometric_estimate(tank_crop)
 
+    # Siniflandirma modeli yon eslemesi
+    DIRECTION_ANGLES = {
+        "front": 180.0,   # Bize dogru -> 180 derece
+        "back": 0.0,      # Bizden uzak -> 0 derece
+        "left": 270.0,    # Sol tarafa -> 270 derece
+        "right": 90.0,    # Sag tarafa -> 90 derece
+    }
+    DIRECTION_TARGETING = {"front"}  # Bize hedef alan yonler
+
     def _model_based_estimate(self, tank_crop: np.ndarray) -> dict:
-        """Model tabanli taret yonu tahmini (keypoint veya OBB)."""
-        results = self.model.predict(
-            source=tank_crop,
-            device=self.device,
-            verbose=False,
-        )
+        """Model tabanli taret yonu tahmini (siniflandirma modeli).
 
-        # Model ciktisini isleyip aci hesapla
-        # Bu kisim egitilen modele baglidir
-        # Su an icin geometrik metoda duser
-        if results[0].boxes is None or len(results[0].boxes) == 0:
+        Egitilen model 4 sinif cikarir: front, back, left, right.
+        front = namlu bize dogru (TEHLIKE).
+        """
+        try:
+            results = self.model.predict(
+                source=tank_crop,
+                device=self.device,
+                verbose=False,
+            )
+
+            probs = results[0].probs
+            if probs is None:
+                return self._geometric_estimate(tank_crop)
+
+            class_id = probs.top1
+            confidence = float(probs.top1conf.item())
+
+            # Sinif ID -> yon esleme
+            direction_map = {0: "front", 1: "back", 2: "left", 3: "right"}
+            direction = direction_map.get(class_id, "unknown")
+
+            angle = self.DIRECTION_ANGLES.get(direction, 0.0)
+            is_targeting = direction in self.DIRECTION_TARGETING and confidence > 0.5
+
+            return {
+                "angle_deg": angle,
+                "is_targeting_us": is_targeting,
+                "confidence": confidence,
+                "method": "model",
+            }
+        except Exception:
             return self._geometric_estimate(tank_crop)
-
-        return self._geometric_estimate(tank_crop)
 
     def _geometric_estimate(self, tank_crop: np.ndarray) -> dict:
         """Geometrik analiz ile taret yonu tahmini.

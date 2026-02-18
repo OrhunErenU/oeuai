@@ -16,11 +16,37 @@ from ultralytics import YOLO
 
 
 def _resolve_data_path(data: str) -> str:
-    """Veri seti YAML yolunu mutlak yola cevir."""
+    """Veri seti YAML yolunu mutlak yola cevir.
+
+    Ayrica YAML icindeki 'path' alanini da mutlak yola donusturur
+    (goreli yollar proje kokundan cozumlenir).
+    """
+    import yaml
+
     p = Path(data)
     if not p.is_absolute():
         p = _PROJECT_ROOT / p
-    return str(p.resolve())
+    resolved = p.resolve()
+
+    # YAML icindeki relative path'i coz
+    with open(resolved, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    if cfg and "path" in cfg:
+        ds_path = Path(cfg["path"])
+        if not ds_path.is_absolute():
+            # Proje kokundan coz
+            ds_path = (_PROJECT_ROOT / ds_path).resolve()
+            cfg["path"] = str(ds_path)
+
+            # Gecici bir YAML olustur (orijinali degistirme)
+            import tempfile
+            tmp = Path(tempfile.mkdtemp()) / "dataset.yaml"
+            with open(tmp, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            return str(tmp)
+
+    return str(resolved)
 
 
 def train(

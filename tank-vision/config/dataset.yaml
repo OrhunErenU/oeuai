@@ -1,7 +1,10 @@
 # Tank Vision AI - YOLO Veri Seti Tanimi
 # ========================================
+# path: Proje kokundeki datasets/tank_vision dizinine isaret eder.
+# Eger farkli bir konumda ise, ortam degiskeni TANK_VISION_DATA ile ayarlayabilirsiniz:
+#   set TANK_VISION_DATA=D:/datasets/tank_vision
 
-path: C:/Users/orhun/opus ai/.claude/worktrees/nervous-greider/tank-vision/datasets/tank_vision
+path: ../datasets/tank_vision
 train: images/train
 val: images/val
 test: images/test

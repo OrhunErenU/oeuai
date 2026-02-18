@@ -143,3 +143,61 @@ class TestThreatAssessor:
         )
         result = assessor.assess(det)
         assert result["priority_score"] >= 0
+
+    def test_drone_low_altitude_fpv_risk(self, assessor):
+        """Alcak ucuslu dron -> FPV/kamikaze riski."""
+        det = DetectionResult(
+            bbox=(100, 50, 150, 90),
+            class_id=0,
+            class_name="drone",
+            confidence=0.85,
+            altitude_m=10.0,
+            distance_m=200.0,
+        )
+        result = assessor.assess(det)
+        assert any("alcak" in r.lower() or "fpv" in r.lower() for r in result["reasons"])
+
+    def test_drone_high_speed_approaching(self, assessor):
+        """Yuksek hizli yaklasan dron -> ekstra tehdit."""
+        det = DetectionResult(
+            bbox=(100, 50, 150, 90),
+            class_id=0,
+            class_name="drone",
+            confidence=0.85,
+            foe_status="foe",
+            speed_ms=25.0,
+            speed_kmh=90.0,
+            approaching=True,
+            distance_m=300.0,
+        )
+        result = assessor.assess(det)
+        assert result["threat_level"] >= 3
+
+    def test_machine_gun_weapon(self, assessor):
+        """Makineli tufek -> ek tehdit puani."""
+        det = DetectionResult(
+            bbox=(310, 270, 370, 290),
+            class_id=3,
+            class_name="weapon",
+            confidence=0.80,
+            weapon_type="machine_gun",
+            distance_m=100.0,
+        )
+        result = assessor.assess(det)
+        assert any("Makineli" in r for r in result["reasons"])
+
+    def test_approaching_enemy_vehicle(self, assessor):
+        """Yaklasan dusman araci -> tehdit."""
+        det = DetectionResult(
+            bbox=(100, 200, 300, 350),
+            class_id=4,
+            class_name="vehicle",
+            confidence=0.75,
+            foe_status="foe",
+            approaching=True,
+            speed_ms=15.0,
+            speed_kmh=54.0,
+            distance_m=500.0,
+        )
+        result = assessor.assess(det)
+        assert result["threat_level"] >= 2
