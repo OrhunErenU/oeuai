@@ -1,0 +1,26 @@
+# Tank Vision AI v2 - Genisletilmis Veri Seti
+# =============================================
+# Ana YOLO dedektoru: 15 sinif
+# + Alt siniflandiricilar: tank modeli, silah turu, sivil/asker
+
+path: C:/tv_data/v2
+train: images/train
+val: images/val
+
+nc: 15
+names:
+  0: drone
+  1: tank
+  2: human
+  3: weapon
+  4: vehicle
+  5: aircraft
+  6: bird
+  7: smoke
+  8: fire
+  9: explosion
+  10: soldier
+  11: civilian
+  12: rifle
+  13: pistol
+  14: barrel
