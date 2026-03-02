@@ -783,14 +783,14 @@ class SAHIDetector:
     Ozellikle uzaktaki drone ve insan tespiti icin kritik.
     """
 
-    def __init__(self, model, slice_size=640, overlap_ratio=0.15, conf=0.25):
+    def __init__(self, model, slice_size=320, overlap_ratio=0.2, conf=0.25):
         self.model = model
         self.slice_size = slice_size
         self.overlap_ratio = overlap_ratio
         self.conf = conf
 
     def detect(self, frame, class_names):
-        """SAHI ile tespit yap — hizli mod (buyuk slice, az overlap)."""
+        """SAHI ile tespit yap — orijinal (320px slice, tum parcalar)."""
         h, w = frame.shape[:2]
         stride = int(self.slice_size * (1 - self.overlap_ratio))
 
@@ -811,45 +811,38 @@ class SAHIDetector:
                     "conf": float(box.conf[0]),
                 })
 
-        # Parcali tespit — max 6 slice (performans icin)
-        slices = []
+        # Parcali tespit — tum parcalar (kucuk obje tespiti icin sart)
         for y_start in range(0, h, stride):
             for x_start in range(0, w, stride):
                 x_end = min(x_start + self.slice_size, w)
                 y_end = min(y_start + self.slice_size, h)
-                if (x_end - x_start) < self.slice_size * 0.4:
+
+                if (x_end - x_start) < self.slice_size * 0.5:
                     continue
-                if (y_end - y_start) < self.slice_size * 0.4:
+                if (y_end - y_start) < self.slice_size * 0.5:
                     continue
-                slices.append((x_start, y_start, x_end, y_end))
 
-        # Max 6 slice ile sinirla (FPS korunsun)
-        if len(slices) > 6:
-            step = len(slices) // 6
-            slices = slices[::step][:6]
+                slice_img = frame[y_start:y_end, x_start:x_end]
+                results = self.model(slice_img, conf=self.conf, device=0, verbose=False)
 
-        for (x_start, y_start, x_end, y_end) in slices:
-            slice_img = frame[y_start:y_end, x_start:x_end]
-            results = self.model(slice_img, conf=self.conf, device=0, verbose=False)
+                for r in results:
+                    for box in r.boxes:
+                        sx1, sy1, sx2, sy2 = map(int, box.xyxy[0].tolist())
+                        gx1 = sx1 + x_start
+                        gy1 = sy1 + y_start
+                        gx2 = sx2 + x_start
+                        gy2 = sy2 + y_start
 
-            for r in results:
-                for box in r.boxes:
-                    sx1, sy1, sx2, sy2 = map(int, box.xyxy[0].tolist())
-                    gx1 = sx1 + x_start
-                    gy1 = sy1 + y_start
-                    gx2 = sx2 + x_start
-                    gy2 = sy2 + y_start
+                        cls_id = int(box.cls[0])
+                        cls_name = class_names.get(cls_id, f"cls_{cls_id}")
+                        cls_name = cls_name.capitalize() if cls_name else cls_name
 
-                    cls_id = int(box.cls[0])
-                    cls_name = class_names.get(cls_id, f"cls_{cls_id}")
-                    cls_name = cls_name.capitalize() if cls_name else cls_name
-
-                    all_dets.append({
-                        "box": (gx1, gy1, gx2, gy2),
-                        "cls": cls_id,
-                        "cls_name": cls_name,
-                        "conf": float(box.conf[0]),
-                    })
+                        all_dets.append({
+                            "box": (gx1, gy1, gx2, gy2),
+                            "cls": cls_id,
+                            "cls_name": cls_name,
+                            "conf": float(box.conf[0]),
+                        })
 
         # NMS
         all_dets = self._nms(all_dets, iou_threshold=0.5)
@@ -1595,52 +1588,12 @@ class MilitaryHUD:
 # Tracker'a bile sokulmayacak siniflar (HUD'da gosterilmez, takip edilmez)
 IGNORED_CLASSES = {"Fire", "Smoke", "Bird", "fire", "smoke", "bird"}
 
-# Sinif bazli minimum confidence esikleri (yukseltildi)
-CLASS_CONF_THRESHOLDS = {
-    "Drone": 0.35,
-    "Tank": 0.45,
-    "Aircraft": 0.50,
-    "Bird": 0.60,
-    "Human": 0.40,
-    "Sivil": 0.40,
-    "Asker": 0.40,
-    "Soldier": 0.40,
-    "Civilian": 0.40,
-    "Vehicle": 0.38,
-    "Weapon": 0.45,
-    "Rifle": 0.45,
-    "Pistol": 0.45,
-    "Barrel": 0.45,
-    "Smoke": 0.50,
-    "Fire": 0.50,
-    "Explosion": 0.50,
-}
-
-# Fiziksel boyut kurallari: (min_area, max_area, min_aspect, max_aspect)
-# aspect = width / height
-CLASS_SIZE_RULES = {
-    "Drone":    (100,   40000,  0.3,  4.0),   # Kucuk-orta, kare-yatay (min dusuruldu: uzak drone)
-    "Tank":     (8000,  500000, 1.0,  4.5),   # Buyuk, yatay
-    "Sivil":    (1500,  200000, 0.2,  1.0),   # Dikey (uzun, dar)
-    "Asker":    (1500,  200000, 0.2,  1.0),   # Dikey
-    "Human":    (1500,  200000, 0.2,  1.0),   # Eski isimler (fallback)
-    "Soldier":  (1500,  200000, 0.2,  1.0),
-    "Civilian": (1500,  200000, 0.2,  1.0),
-    "Vehicle":  (4000,  500000, 0.8,  4.5),   # Buyuk, yatay
-    "Aircraft": (10000, 800000, 0.5,  5.0),   # Cok buyuk
-    "Bird":     (50,    3000,   0.3,  4.0),   # Cok kucuk
-    "Rifle":    (800,   30000,  1.5,  10.0),  # Yatay (uzun, ince)
-    "Pistol":   (300,   15000,  0.5,  3.0),   # Kucuk
-}
 
 
 def fix_drone_confusion(detections):
-    """Tum siniflar icin fiziksel kural kontrolu + confidence filtresi.
+    """Minimal filtre: sadece isim duzeltme + cakisan tespit birlestirme.
 
-    1. Sinif bazli minimum confidence kontrolu
-    2. Boyut + en-boy orani fiziksel kontrol
-    3. Drone/Bird/Aircraft ozel karisiklik duzeltmesi
-    4. Cakisan tespitlerde en iyi conf kalir
+    Agresif filtre YAPMA — model ne derse onu goster.
     """
     if not detections:
         return detections
@@ -1649,60 +1602,20 @@ def fix_drone_confusion(detections):
 
     for det in detections:
         cls = det["cls_name"]
-        conf = det["conf"]
 
-        # --- 0. IGNORED_CLASSES: tracker'a bile girmesin ---
-        if cls in IGNORED_CLASSES:
-            continue
-
-        # --- 0b. Sinif isim duzeltme: Human/Civilian -> Sivil, Soldier -> Asker ---
+        # --- Sinif isim duzeltme ---
+        # Human/Civilian -> Sivil, Soldier -> Asker
         if cls in ("Human", "Civilian"):
             det["cls_name"] = "Sivil"
-            cls = "Sivil"
         elif cls == "Soldier":
             det["cls_name"] = "Asker"
-            cls = "Asker"
-
-        x1, y1, x2, y2 = det["box"]
-        w = x2 - x1
-        h = y2 - y1
-        area = w * h
-        aspect = w / max(h, 1)
-
-        # --- 1. Confidence filtresi ---
-        min_conf = CLASS_CONF_THRESHOLDS.get(cls, 0.35)
-        if conf < min_conf:
-            continue  # Dusuk confidence -> atla
-
-        # --- 2. Boyut + oran kontrolu ---
-        if cls in CLASS_SIZE_RULES:
-            min_area, max_area, min_asp, max_asp = CLASS_SIZE_RULES[cls]
-            if area < min_area or area > max_area:
-                # Boyut uyumsuz -> sinifi duzelt veya atla
-                det = _try_fix_class(det, area, aspect)
-                if det is None:
-                    continue
-            elif aspect < min_asp or aspect > max_asp:
-                # Oran uyumsuz -> sinifi duzelt veya atla
-                det = _try_fix_class(det, area, aspect)
-                if det is None:
-                    continue
-
-        # --- 3. Drone/Bird/Aircraft ozel ---
-        cls = det["cls_name"]  # _try_fix_class degistirmis olabilir
-        if cls == "Bird" and area > 8000:
-            det["cls_name"] = "Drone"
-            det["cls"] = 0
-        elif cls == "Aircraft" and area < 5000:
-            det["cls_name"] = "Drone"
-            det["cls"] = 0
-        elif cls == "Bird" and conf < 0.55 and area > 3000:
-            det["cls_name"] = "Drone"
-            det["cls"] = 0
+        # Fire/Smoke/Bird -> gosterme
+        elif cls in IGNORED_CLASSES:
+            continue
 
         fixed.append(det)
 
-    # --- 4. Cakisan tespitlerde en iyi conf kalsin ---
+    # --- Cakisan tespitlerde en iyi conf kalsin (NMS) ---
     result = []
     used = set()
     for i, d1 in enumerate(fixed):
@@ -1720,45 +1633,6 @@ def fix_drone_confusion(detections):
         result.append(best)
 
     return result
-
-
-def _try_fix_class(det, area, aspect):
-    """Boyut/oran uyumsuz tespitin sinifini duzeltmeye calis.
-
-    Ornegin: insana drone denmis -> boyut buyukse ve dikey ise Human yap
-    Veya: arabaya tank denmis -> boyut kucukse Vehicle yap
-    Duzeltilemiyrsa None dondur (tespit atilir).
-    """
-    cls = det["cls_name"]
-    conf = det["conf"]
-
-    # Drone denmis ama cok buyuk ve dikey -> muhtemelen Sivil
-    if cls == "Drone" and area > 50000 and aspect < 0.9:
-        det["cls_name"] = "Sivil"
-        det["cls"] = 2
-        return det
-
-    # Drone denmis ama orta buyuklukte -> muhtemelen Bird
-    if cls == "Drone" and area < 200:
-        return None  # Cok kucuk, gurultu
-
-    # Tank denmis ama cok kucuk -> muhtemelen Vehicle
-    if cls == "Tank" and area < 5000:
-        det["cls_name"] = "Vehicle"
-        det["cls"] = 4  # vehicle cls_id
-        return det
-
-    # Human denmis ama yatay -> muhtemelen Vehicle veya yanlis
-    if cls in ("Human", "Soldier", "Civilian", "Sivil", "Asker") and aspect > 2.0 and area > 10000:
-        det["cls_name"] = "Vehicle"
-        det["cls"] = 4
-        return det
-
-    # Duzeltilemediyse dusuk conf ise atla
-    if conf < 0.5:
-        return None
-
-    return det  # Yuksek conf, olduğu gibi birak
 
 
 def find_best_model():
@@ -2268,8 +2142,8 @@ def main():
                         help="Her N frame'de tespit (default: 2)")
     parser.add_argument("--sahi", action="store_true",
                         help="SAHI modu (kucuk objeler icin)")
-    parser.add_argument("--sahi-slice", type=int, default=640,
-                        help="SAHI dilim boyutu (default: 640)")
+    parser.add_argument("--sahi-slice", type=int, default=320,
+                        help="SAHI dilim boyutu (default: 320)")
     parser.add_argument("--pose", action="store_true",
                         help="Pose estimation aktif")
     parser.add_argument("--output", type=str, default=None,
