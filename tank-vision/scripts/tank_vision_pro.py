@@ -213,9 +213,9 @@ class ByteTrackTracker:
         return self.tracks
 
     # Class onay icin gereken minimum frame sayisi
-    CONFIRM_FRAMES = 3      # 3 frame ayni class -> onaylanir, HUD'da gosterilir
-    LOCK_FRAMES = 10        # 10 frame ayni class -> kilitlenir, ASLA degismez
-    NEW_TRACK_MIN_CONF = 0.45  # Yeni track olusturmak icin minimum confidence
+    CONFIRM_FRAMES = 1      # 1 frame -> hemen goster (uzak drone kacirilmasin)
+    LOCK_FRAMES = 8         # 8 frame ayni class -> kilitlenir, ASLA degismez
+    NEW_TRACK_MIN_CONF = 0.25  # Yeni track icin minimum conf (dusuk = uzak obje yakalanir)
 
     def _create_track(self, det, frame_time):
         """Yeni track olustur — henuz onaylanmamis (pending)."""
@@ -380,9 +380,9 @@ class ByteTrackTracker:
             track["eta_seconds"] = None
 
     def get_confirmed_tracks(self):
-        """Onaylanmis track'leri dondur (class onaylanmis + min_hits gecmis)."""
+        """Aktif track'leri dondur — ilk frame'den itibaren goster."""
         return {tid: t for tid, t in self.tracks.items()
-                if t["hits"] >= self.min_hits and t.get("cls_confirmed", True)}
+                if t["hits"] >= self.min_hits}
 
     def get_track_trail(self, tid, max_points=20):
         """Track'in iz noktalarini dondur (HUD'da cizim icin)."""
@@ -783,20 +783,20 @@ class SAHIDetector:
     Ozellikle uzaktaki drone ve insan tespiti icin kritik.
     """
 
-    def __init__(self, model, slice_size=320, overlap_ratio=0.2, conf=0.25):
+    def __init__(self, model, slice_size=640, overlap_ratio=0.15, conf=0.25):
         self.model = model
         self.slice_size = slice_size
         self.overlap_ratio = overlap_ratio
         self.conf = conf
 
     def detect(self, frame, class_names):
-        """SAHI ile tespit yap."""
+        """SAHI ile tespit yap — hizli mod (buyuk slice, az overlap)."""
         h, w = frame.shape[:2]
         stride = int(self.slice_size * (1 - self.overlap_ratio))
 
         all_dets = []
 
-        # Normal boyut tespiti
+        # Normal boyut tespiti (tam frame)
         normal_results = self.model(frame, conf=self.conf, device=0, verbose=False)
         for r in normal_results:
             for box in r.boxes:
@@ -811,45 +811,48 @@ class SAHIDetector:
                     "conf": float(box.conf[0]),
                 })
 
-        # Parcali tespit
+        # Parcali tespit — max 6 slice (performans icin)
+        slices = []
         for y_start in range(0, h, stride):
             for x_start in range(0, w, stride):
                 x_end = min(x_start + self.slice_size, w)
                 y_end = min(y_start + self.slice_size, h)
-
-                # Cok kucuk parcalari atla
-                if (x_end - x_start) < self.slice_size * 0.5:
+                if (x_end - x_start) < self.slice_size * 0.4:
                     continue
-                if (y_end - y_start) < self.slice_size * 0.5:
+                if (y_end - y_start) < self.slice_size * 0.4:
                     continue
+                slices.append((x_start, y_start, x_end, y_end))
 
-                slice_img = frame[y_start:y_end, x_start:x_end]
+        # Max 6 slice ile sinirla (FPS korunsun)
+        if len(slices) > 6:
+            step = len(slices) // 6
+            slices = slices[::step][:6]
 
-                results = self.model(slice_img, conf=self.conf, device=0, verbose=False)
+        for (x_start, y_start, x_end, y_end) in slices:
+            slice_img = frame[y_start:y_end, x_start:x_end]
+            results = self.model(slice_img, conf=self.conf, device=0, verbose=False)
 
-                for r in results:
-                    for box in r.boxes:
-                        sx1, sy1, sx2, sy2 = map(int, box.xyxy[0].tolist())
-                        # Global koordinatlara cevir
-                        gx1 = sx1 + x_start
-                        gy1 = sy1 + y_start
-                        gx2 = sx2 + x_start
-                        gy2 = sy2 + y_start
+            for r in results:
+                for box in r.boxes:
+                    sx1, sy1, sx2, sy2 = map(int, box.xyxy[0].tolist())
+                    gx1 = sx1 + x_start
+                    gy1 = sy1 + y_start
+                    gx2 = sx2 + x_start
+                    gy2 = sy2 + y_start
 
-                        cls_id = int(box.cls[0])
-                        cls_name = class_names.get(cls_id, f"cls_{cls_id}")
-                        cls_name = cls_name.capitalize() if cls_name else cls_name
+                    cls_id = int(box.cls[0])
+                    cls_name = class_names.get(cls_id, f"cls_{cls_id}")
+                    cls_name = cls_name.capitalize() if cls_name else cls_name
 
-                        all_dets.append({
-                            "box": (gx1, gy1, gx2, gy2),
-                            "cls": cls_id,
-                            "cls_name": cls_name,
-                            "conf": float(box.conf[0]),
-                        })
+                    all_dets.append({
+                        "box": (gx1, gy1, gx2, gy2),
+                        "cls": cls_id,
+                        "cls_name": cls_name,
+                        "conf": float(box.conf[0]),
+                    })
 
-        # NMS - ayni sinifta cakisan tespitleri birlestir
+        # NMS
         all_dets = self._nms(all_dets, iou_threshold=0.5)
-
         return all_dets
 
     def _nms(self, detections, iou_threshold=0.5):
@@ -1812,9 +1815,9 @@ def run_inference(args):
 
     # 1. ByteTrack Tracker
     tracker = ByteTrackTracker(
-        max_age=30, min_hits=2,
-        iou_threshold=0.3,
-        high_thresh=0.5, low_thresh=0.1
+        max_age=30, min_hits=1,
+        iou_threshold=0.2,
+        high_thresh=0.3, low_thresh=0.1
     )
     print("[OK] ByteTrack Tracker")
 
@@ -2259,14 +2262,14 @@ def main():
                         help="Model dosyasi (.pt)")
     parser.add_argument("--source", type=str, default=None,
                         help="Video/resim/webcam (0=webcam)")
-    parser.add_argument("--conf", type=float, default=0.35,
-                        help="Guven esigi (default: 0.35)")
+    parser.add_argument("--conf", type=float, default=0.25,
+                        help="Guven esigi (default: 0.25)")
     parser.add_argument("--skip-frames", type=int, default=2,
                         help="Her N frame'de tespit (default: 2)")
     parser.add_argument("--sahi", action="store_true",
                         help="SAHI modu (kucuk objeler icin)")
-    parser.add_argument("--sahi-slice", type=int, default=320,
-                        help="SAHI dilim boyutu (default: 320)")
+    parser.add_argument("--sahi-slice", type=int, default=640,
+                        help="SAHI dilim boyutu (default: 640)")
     parser.add_argument("--pose", action="store_true",
                         help="Pose estimation aktif")
     parser.add_argument("--output", type=str, default=None,
