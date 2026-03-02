@@ -44,13 +44,15 @@ CLASSES_V2 = {
 }
 
 THREAT_LEVELS = {
-    "Tank": 5, "Weapon": 4, "Rifle": 4, "Pistol": 3, "Soldier": 3,
+    "Tank": 5, "Weapon": 4, "Rifle": 4, "Pistol": 3, "Asker": 3,
     "Drone": 3, "Aircraft": 4, "Explosion": 5, "Fire": 4, "Smoke": 2,
-    "Barrel": 5, "Vehicle": 2, "Human": 1, "Civilian": 0, "Bird": 0,
+    "Barrel": 5, "Vehicle": 2, "Sivil": 0, "Human": 1, "Soldier": 3,
+    "Civilian": 0, "Bird": 0,
 }
 
 COLORS = {
-    "Drone": (0, 165, 255), "Tank": (0, 0, 200), "Human": (200, 200, 0),
+    "Drone": (0, 165, 255), "Tank": (0, 0, 200), "Sivil": (0, 255, 0),
+    "Asker": (0, 140, 255), "Human": (200, 200, 0),
     "Weapon": (0, 0, 255), "Vehicle": (200, 200, 200), "Aircraft": (255, 100, 0),
     "Bird": (0, 200, 0), "Smoke": (180, 180, 180), "Fire": (0, 100, 255),
     "Explosion": (0, 0, 255), "Soldier": (0, 140, 255), "Civilian": (0, 255, 0),
@@ -1314,22 +1316,16 @@ class MilitaryHUD:
             cv2.line(frame, (x, h-5), (x+10, h-5), (0, 100, 0), 1)
 
     def _draw_crosshair(self, frame):
-        """Kucuk askeri nisan."""
+        """Minimal nisan — sadece kucuk nokta."""
         h, w = frame.shape[:2]
         cx, cy = w // 2, h // 2
-        color = (0, 255, 0)
-
-        # Kucuk dis cember
-        cv2.circle(frame, (cx, cy), 15, color, 1)
-        # Nokta
-        cv2.circle(frame, (cx, cy), 2, color, -1)
-        # Kisa cizgiler
-        gap = 5
-        length = 12
-        cv2.line(frame, (cx - length, cy), (cx - gap, cy), color, 1)
-        cv2.line(frame, (cx + gap, cy), (cx + length, cy), color, 1)
-        cv2.line(frame, (cx, cy - length), (cx, cy - gap), color, 1)
-        cv2.line(frame, (cx, cy + gap), (cx, cy + length), color, 1)
+        color = (0, 200, 0)
+        # Sadece 1px nokta + 4px cizgiler
+        cv2.circle(frame, (cx, cy), 1, color, -1)
+        cv2.line(frame, (cx - 6, cy), (cx - 2, cy), color, 1)
+        cv2.line(frame, (cx + 2, cy), (cx + 6, cy), color, 1)
+        cv2.line(frame, (cx, cy - 6), (cx, cy - 2), color, 1)
+        cv2.line(frame, (cx, cy + 2), (cx, cy + 6), color, 1)
 
     # Gosterilmeyecek siniflar
     HIDDEN_CLASSES = {"Fire", "Smoke", "Bird", "fire", "smoke", "bird"}
@@ -1403,7 +1399,7 @@ class MilitaryHUD:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 0, 255), 1)
 
         # Pose bilgisi (insan davranisi)
-        if cls in ("Human", "Soldier", "Civilian") and track.get("pose_info"):
+        if cls in ("Human", "Soldier", "Civilian", "Sivil", "Asker") and track.get("pose_info"):
             pose = track["pose_info"]
             pose_text = pose["pose"]
             pose_color = (0, 0, 255) if pose.get("threat") else (0, 200, 200)
@@ -1416,16 +1412,7 @@ class MilitaryHUD:
             cv2.putText(frame, sub["model"], (x1, extra_y + 12),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 255, 255), 1)
 
-        # Iz ciz (trail) — son 15 nokta
-        positions = list(track.get("positions", []))
-        trail_pts = positions[-15:]
-        if len(trail_pts) > 2:
-            for i in range(1, len(trail_pts)):
-                alpha = i / len(trail_pts)
-                pt1 = (int(trail_pts[i-1][0]), int(trail_pts[i-1][1]))
-                pt2 = (int(trail_pts[i][0]), int(trail_pts[i][1]))
-                trail_color = tuple(int(c * alpha) for c in color)
-                cv2.line(frame, pt1, pt2, trail_color, 1)
+        # Trail kaldirildi — kullanici istegi
 
     def _draw_threat_bar(self, frame, threat_level, threat_sources):
         """Tehdit gostergesi."""
@@ -1607,34 +1594,38 @@ IGNORED_CLASSES = {"Fire", "Smoke", "Bird", "fire", "smoke", "bird"}
 
 # Sinif bazli minimum confidence esikleri (yukseltildi)
 CLASS_CONF_THRESHOLDS = {
-    "Drone": 0.55,
-    "Tank": 0.50,
-    "Aircraft": 0.55,
+    "Drone": 0.35,
+    "Tank": 0.45,
+    "Aircraft": 0.50,
     "Bird": 0.60,
-    "Human": 0.45,
-    "Soldier": 0.45,
-    "Civilian": 0.45,
-    "Vehicle": 0.40,
-    "Weapon": 0.50,
-    "Rifle": 0.50,
-    "Pistol": 0.50,
-    "Barrel": 0.50,
+    "Human": 0.40,
+    "Sivil": 0.40,
+    "Asker": 0.40,
+    "Soldier": 0.40,
+    "Civilian": 0.40,
+    "Vehicle": 0.38,
+    "Weapon": 0.45,
+    "Rifle": 0.45,
+    "Pistol": 0.45,
+    "Barrel": 0.45,
     "Smoke": 0.50,
     "Fire": 0.50,
-    "Explosion": 0.55,
+    "Explosion": 0.50,
 }
 
 # Fiziksel boyut kurallari: (min_area, max_area, min_aspect, max_aspect)
 # aspect = width / height
 CLASS_SIZE_RULES = {
-    "Drone":    (300,   40000,  0.3,  4.0),   # Kucuk-orta, kare-yatay
-    "Tank":     (8000,  500000, 1.0,  4.5),   # Buyuk, yatay (min arttirildi)
-    "Human":    (1500,  200000, 0.2,  1.0),   # Dikey (uzun, dar)
-    "Soldier":  (1500,  200000, 0.2,  1.0),   # Dikey
-    "Civilian": (1500,  200000, 0.2,  1.0),   # Dikey
+    "Drone":    (100,   40000,  0.3,  4.0),   # Kucuk-orta, kare-yatay (min dusuruldu: uzak drone)
+    "Tank":     (8000,  500000, 1.0,  4.5),   # Buyuk, yatay
+    "Sivil":    (1500,  200000, 0.2,  1.0),   # Dikey (uzun, dar)
+    "Asker":    (1500,  200000, 0.2,  1.0),   # Dikey
+    "Human":    (1500,  200000, 0.2,  1.0),   # Eski isimler (fallback)
+    "Soldier":  (1500,  200000, 0.2,  1.0),
+    "Civilian": (1500,  200000, 0.2,  1.0),
     "Vehicle":  (4000,  500000, 0.8,  4.5),   # Buyuk, yatay
-    "Aircraft": (10000, 800000, 0.5,  5.0),   # Cok buyuk (min arttirildi)
-    "Bird":     (50,    3000,   0.3,  4.0),   # Cok kucuk (max dusuruldu)
+    "Aircraft": (10000, 800000, 0.5,  5.0),   # Cok buyuk
+    "Bird":     (50,    3000,   0.3,  4.0),   # Cok kucuk
     "Rifle":    (800,   30000,  1.5,  10.0),  # Yatay (uzun, ince)
     "Pistol":   (300,   15000,  0.5,  3.0),   # Kucuk
 }
@@ -1660,6 +1651,14 @@ def fix_drone_confusion(detections):
         # --- 0. IGNORED_CLASSES: tracker'a bile girmesin ---
         if cls in IGNORED_CLASSES:
             continue
+
+        # --- 0b. Sinif isim duzeltme: Human/Civilian -> Sivil, Soldier -> Asker ---
+        if cls in ("Human", "Civilian"):
+            det["cls_name"] = "Sivil"
+            cls = "Sivil"
+        elif cls == "Soldier":
+            det["cls_name"] = "Asker"
+            cls = "Asker"
 
         x1, y1, x2, y2 = det["box"]
         w = x2 - x1
@@ -1730,10 +1729,10 @@ def _try_fix_class(det, area, aspect):
     cls = det["cls_name"]
     conf = det["conf"]
 
-    # Drone denmis ama cok buyuk ve dikey -> muhtemelen Human
+    # Drone denmis ama cok buyuk ve dikey -> muhtemelen Sivil
     if cls == "Drone" and area > 50000 and aspect < 0.9:
-        det["cls_name"] = "Human"
-        det["cls"] = 2  # human cls_id
+        det["cls_name"] = "Sivil"
+        det["cls"] = 2
         return det
 
     # Drone denmis ama orta buyuklukte -> muhtemelen Bird
@@ -1747,7 +1746,7 @@ def _try_fix_class(det, area, aspect):
         return det
 
     # Human denmis ama yatay -> muhtemelen Vehicle veya yanlis
-    if cls in ("Human", "Soldier", "Civilian") and aspect > 2.0 and area > 10000:
+    if cls in ("Human", "Soldier", "Civilian", "Sivil", "Asker") and aspect > 2.0 and area > 10000:
         det["cls_name"] = "Vehicle"
         det["cls"] = 4
         return det
@@ -1955,7 +1954,7 @@ def _run_screen(model, class_names, tracker, depth_estimator,
             if sub:
                 track["sub_class"] = sub
 
-            if pose_analyzer and track["cls_name"] in ("Human", "Soldier", "Civilian"):
+            if pose_analyzer and track["cls_name"] in ("Human", "Soldier", "Civilian", "Sivil", "Asker"):
                 if frame_count % 5 == 0:
                     pose = pose_analyzer.analyze(frame, track["box"], track_id=tid)
                     track["pose_info"] = pose
@@ -2109,7 +2108,7 @@ def _run_video(source, model, class_names, tracker, depth_estimator,
                 track["sub_class"] = sub
 
             # Pose analizi
-            if pose_analyzer and track["cls_name"] in ("Human", "Soldier", "Civilian"):
+            if pose_analyzer and track["cls_name"] in ("Human", "Soldier", "Civilian", "Sivil", "Asker"):
                 if frame_count % 5 == 0:  # Her 5 frame'de bir
                     pose = pose_analyzer.analyze(frame, track["box"], track_id=tid)
                     track["pose_info"] = pose
