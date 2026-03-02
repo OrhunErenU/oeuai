@@ -105,8 +105,9 @@ class ByteTrackTracker:
         self.tracks = {}
         self.next_id = 1
         self.frame_count = 0
+        self._current_frame = None
 
-    def update(self, detections, frame_time):
+    def update(self, detections, frame_time, frame=None):
         """Tespitlerle track'leri guncelle.
 
         ByteTrack stratejisi:
@@ -115,6 +116,7 @@ class ByteTrackTracker:
         3. Kalan tespitlerden yeni track olustur
         """
         self.frame_count += 1
+        self._current_frame = frame  # Renk histogrami icin
 
         # Tespitleri guven seviyesine gore ayir
         high_dets = [d for d in detections if d["conf"] >= self.high_thresh]
@@ -145,7 +147,16 @@ class ByteTrackTracker:
 
                 # Ayni sinifsa bonus ver (ID degismesini onle)
                 cls_bonus = 0.15 if det.get("cls_name") == track.get("cls_name") else 0
-                score = iou + cls_bonus + center_bonus
+
+                # Renk histogrami benzerlik bonusu
+                hist_bonus = 0
+                if self._current_frame is not None and track.get("color_hist") is not None:
+                    det_hist = self._calc_color_hist(self._current_frame, det["box"])
+                    if det_hist is not None:
+                        similarity = cv2.compareHist(track["color_hist"], det_hist, cv2.HISTCMP_CORREL)
+                        hist_bonus = max(0, similarity * 0.1)  # 0-0.1 arasi bonus
+
+                score = iou + cls_bonus + center_bonus + hist_bonus
                 if score > best_score and (iou > self.iou_threshold * 0.3 or center_bonus > 0.1):
                     best_score = score
                     best_iou = iou
@@ -180,10 +191,11 @@ class ByteTrackTracker:
                 matched_tracks.add(tid)
                 matched_low.add(best_idx)
 
-        # --- 3. Asama: Yeni track'ler olustur ---
+        # --- 3. Asama: Yeni track'ler olustur (minimum conf filtreli) ---
         for i, det in enumerate(high_dets):
             if i not in matched_dets:
-                self._create_track(det, frame_time)
+                if det["conf"] >= self.NEW_TRACK_MIN_CONF:
+                    self._create_track(det, frame_time)
 
         # --- 4. Asama: Eski track'leri temizle ---
         to_delete = []
@@ -200,7 +212,8 @@ class ByteTrackTracker:
 
     # Class onay icin gereken minimum frame sayisi
     CONFIRM_FRAMES = 3      # 3 frame ayni class -> onaylanir, HUD'da gosterilir
-    LOCK_FRAMES = 15        # 15 frame ayni class -> kilitlenir, ASLA degismez
+    LOCK_FRAMES = 10        # 10 frame ayni class -> kilitlenir, ASLA degismez
+    NEW_TRACK_MIN_CONF = 0.45  # Yeni track olusturmak icin minimum confidence
 
     def _create_track(self, det, frame_time):
         """Yeni track olustur — henuz onaylanmamis (pending)."""
@@ -237,6 +250,14 @@ class ByteTrackTracker:
         self.tracks[self.next_id]["positions"].append((cx, cy))
         self.tracks[self.next_id]["timestamps"].append(frame_time)
         self.tracks[self.next_id]["boxes"].append(det["box"])
+
+        # Renk histogrami hesapla (ID eslesmesi icin)
+        if self._current_frame is not None:
+            self.tracks[self.next_id]["color_hist"] = self._calc_color_hist(
+                self._current_frame, det["box"])
+        else:
+            self.tracks[self.next_id]["color_hist"] = None
+
         self.next_id += 1
 
     def _update_track(self, tid, det, frame_time):
@@ -296,6 +317,12 @@ class ByteTrackTracker:
         track["positions"].append((cx, cy))
         track["timestamps"].append(frame_time)
         track["boxes"].append(det["box"])
+
+        # Renk histogramini her 10 frame'de guncelle
+        if self._current_frame is not None and track["hits"] % 10 == 0:
+            new_hist = self._calc_color_hist(self._current_frame, det["box"])
+            if new_hist is not None:
+                track["color_hist"] = new_hist
 
         # Hiz ve yon hesapla
         if len(track["positions"]) >= 2:
@@ -398,6 +425,23 @@ class ByteTrackTracker:
         if ratio < 2.0:
             return max(0, 0.2 * (1.0 - ratio / 2.0))
         return 0
+
+    @staticmethod
+    def _calc_color_hist(frame, box):
+        """Box iceriginin renk histogramini hesapla (HSV)."""
+        x1, y1, x2, y2 = box
+        h, w = frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        roi = frame[y1:y2, x1:x2]
+        if roi.size == 0:
+            return None
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
+        cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
+        return hist
 
     @staticmethod
     def _calc_iou(box1, box2):
@@ -843,13 +887,17 @@ class SAHIDetector:
 # ============================================================
 
 class PoseAnalyzer:
-    """YOLOv11-pose ile insan pozu analizi.
+    """YOLOv11-pose ile insan pozu ve davranisi analizi.
 
-    Tespit edilen insanlarin pozunu analiz ederek:
-    - Silah tutma pozu -> TEHDIT
-    - Eller yukari -> TESLIM
-    - Yerde -> YARALI/ETKISIZ
-    - Kosu -> KACIS/SALDIRI
+    8 poz/davranis:
+    - TESLIM: Eller havada
+    - YERDE: Yatay pozisyon
+    - SILAHLI: Silah tutma pozu (TEHDIT)
+    - KOSUYOR: Hizli hareket + genis bacak acisi
+    - YURUYOR: Orta hareket + dar bacak acisi
+    - EGILMIS: Omuz-kalca mesafesi kisalmis (crouch)
+    - OTURUYOR: Diz acisi < 90 derece
+    - AYAKTA: Normal durus
     """
 
     KEYPOINT_NAMES = [
@@ -862,6 +910,7 @@ class PoseAnalyzer:
     def __init__(self):
         self.pose_model = None
         self.available = False
+        self._prev_keypoints = {}  # track_id -> onceki keypoints (hareket tespiti icin)
         self._try_load()
 
     def _try_load(self):
@@ -874,7 +923,7 @@ class PoseAnalyzer:
             print(f"[POSE] Pose modeli yuklenemedi: {e}")
             self.available = False
 
-    def analyze(self, frame, person_box):
+    def analyze(self, frame, person_box, track_id=None):
         """Kisi kutusunda pose analizi yap."""
         if not self.available:
             return {"pose": "BILINMIYOR", "threat": False}
@@ -899,13 +948,26 @@ class PoseAnalyzer:
             kpts = results[0].keypoints.xy[0].cpu().numpy()  # (17, 2)
             confs = results[0].keypoints.conf[0].cpu().numpy()  # (17,)
 
-            return self._analyze_pose(kpts, confs, crop.shape)
+            # Onceki keypoints ile hareket tespiti
+            prev_kpts = None
+            if track_id is not None:
+                prev_kpts = self._prev_keypoints.get(track_id)
+                self._prev_keypoints[track_id] = kpts.copy()
+
+            return self._analyze_pose(kpts, confs, crop.shape, prev_kpts)
 
         except Exception:
             return {"pose": "BILINMIYOR", "threat": False}
 
-    def _analyze_pose(self, kpts, confs, crop_shape):
-        """Keypoint'lerden poz analizi."""
+    def _calc_angle(self, a, b, c):
+        """Uc nokta arasi aci hesapla (derece). b = vertex."""
+        ba = a - b
+        bc = c - b
+        cos_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
+        return np.degrees(np.arccos(np.clip(cos_angle, -1, 1)))
+
+    def _analyze_pose(self, kpts, confs, crop_shape, prev_kpts=None):
+        """Keypoint'lerden poz + davranis analizi."""
         h, w = crop_shape[:2]
 
         # Keypoint indeksleri
@@ -918,49 +980,177 @@ class PoseAnalyzer:
 
         min_conf = 0.3
 
-        # Eller yukari mi? (teslim)
+        # ---- 1. TESLIM: Eller yukari ----
         if (confs[L_WRIST] > min_conf and confs[R_WRIST] > min_conf and
             confs[L_SHOULDER] > min_conf and confs[R_SHOULDER] > min_conf):
-
             l_hand_up = kpts[L_WRIST][1] < kpts[L_SHOULDER][1] - 30
             r_hand_up = kpts[R_WRIST][1] < kpts[R_SHOULDER][1] - 30
-
             if l_hand_up and r_hand_up:
                 return {"pose": "TESLIM", "threat": False, "detail": "Eller havada"}
 
-        # Yerde mi? (yarali/etkisiz)
-        if (confs[L_HIP] > min_conf and confs[R_HIP] > min_conf):
+        # ---- 2. YERDE: Yatay pozisyon ----
+        if confs[L_HIP] > min_conf and confs[R_HIP] > min_conf:
             hip_y = (kpts[L_HIP][1] + kpts[R_HIP][1]) / 2
-            if hip_y > h * 0.7:  # Kalca alt kisimda
-                if (confs[L_SHOULDER] > min_conf and confs[R_SHOULDER] > min_conf):
+            if hip_y > h * 0.7:
+                if confs[L_SHOULDER] > min_conf and confs[R_SHOULDER] > min_conf:
                     shoulder_y = (kpts[L_SHOULDER][1] + kpts[R_SHOULDER][1]) / 2
-                    if abs(shoulder_y - hip_y) < h * 0.15:  # Yatay
+                    if abs(shoulder_y - hip_y) < h * 0.15:
                         return {"pose": "YERDE", "threat": False, "detail": "Yerde yatiyor"}
 
-        # Silah tutma pozu (kollar one uzanmis)
+        # ---- 3. SILAHLI: Kollar one uzanmis, eller yakin ----
         if (confs[L_WRIST] > min_conf and confs[R_WRIST] > min_conf and
             confs[L_ELBOW] > min_conf and confs[R_ELBOW] > min_conf):
-
-            # Her iki el de one uzanmis mi?
-            l_arm_extended = abs(kpts[L_WRIST][1] - kpts[L_ELBOW][1]) < h * 0.1
-            r_arm_extended = abs(kpts[R_WRIST][1] - kpts[R_ELBOW][1]) < h * 0.1
-
-            # Eller yakin mi? (silah tutma)
+            l_arm_ext = abs(kpts[L_WRIST][1] - kpts[L_ELBOW][1]) < h * 0.1
+            r_arm_ext = abs(kpts[R_WRIST][1] - kpts[R_ELBOW][1]) < h * 0.1
             hand_dist = math.sqrt(
                 (kpts[L_WRIST][0] - kpts[R_WRIST][0])**2 +
                 (kpts[L_WRIST][1] - kpts[R_WRIST][1])**2
             )
-            hands_close = hand_dist < w * 0.3
-
-            if (l_arm_extended or r_arm_extended) and hands_close:
+            if (l_arm_ext or r_arm_ext) and hand_dist < w * 0.3:
                 return {"pose": "SILAHLI", "threat": True, "detail": "Silah tutma pozu"}
 
-        # Normal ayakta
+        # ---- 4. OTURUYOR: Diz acisi < 100 derece ----
+        if (confs[L_HIP] > min_conf and confs[L_KNEE] > min_conf and
+            confs[L_ANKLE] > min_conf):
+            knee_angle = self._calc_angle(kpts[L_HIP], kpts[L_KNEE], kpts[L_ANKLE])
+            if knee_angle < 100:
+                return {"pose": "OTURUYOR", "threat": False, "detail": "Oturma pozu"}
+
+        if (confs[R_HIP] > min_conf and confs[R_KNEE] > min_conf and
+            confs[R_ANKLE] > min_conf):
+            knee_angle = self._calc_angle(kpts[R_HIP], kpts[R_KNEE], kpts[R_ANKLE])
+            if knee_angle < 100:
+                return {"pose": "OTURUYOR", "threat": False, "detail": "Oturma pozu"}
+
+        # ---- 5. EGILMIS: Omuz-kalca mesafesi kisalmis ----
+        if (confs[L_SHOULDER] > min_conf and confs[R_SHOULDER] > min_conf and
+            confs[L_HIP] > min_conf and confs[R_HIP] > min_conf):
+            shoulder_y = (kpts[L_SHOULDER][1] + kpts[R_SHOULDER][1]) / 2
+            hip_y = (kpts[L_HIP][1] + kpts[R_HIP][1]) / 2
+            torso_len = abs(hip_y - shoulder_y)
+            # Normal torso ~ h * 0.3, egilmis < h * 0.18
+            if torso_len < h * 0.18 and torso_len > 0:
+                return {"pose": "EGILMIS", "threat": False, "detail": "Egilmis/crouch"}
+
+        # ---- 6. KOSUYOR / YURUYOR: Onceki keypoints ile hareket tespiti ----
+        if prev_kpts is not None:
+            # Bacak keypoints arasi hareket
+            motion = 0
+            motion_pts = [L_ANKLE, R_ANKLE, L_KNEE, R_KNEE, L_HIP, R_HIP]
+            valid_count = 0
+            for idx in motion_pts:
+                if confs[idx] > min_conf:
+                    dx = kpts[idx][0] - prev_kpts[idx][0]
+                    dy = kpts[idx][1] - prev_kpts[idx][1]
+                    motion += math.sqrt(dx*dx + dy*dy)
+                    valid_count += 1
+            if valid_count > 0:
+                avg_motion = motion / valid_count
+
+                # Bacak acisi (sol ankle - kalca - sag ankle)
+                leg_angle = 0
+                if (confs[L_ANKLE] > min_conf and confs[R_ANKLE] > min_conf and
+                    confs[L_HIP] > min_conf and confs[R_HIP] > min_conf):
+                    hip_center = (kpts[L_HIP] + kpts[R_HIP]) / 2
+                    leg_angle = self._calc_angle(kpts[L_ANKLE], hip_center, kpts[R_ANKLE])
+
+                # KOSUYOR: hizli hareket + genis bacak acisi
+                if avg_motion > 15 and leg_angle > 45:
+                    return {"pose": "KOSUYOR", "threat": False, "detail": "Kosma hareketi"}
+
+                # YURUYOR: orta hareket
+                if avg_motion > 5 and leg_angle > 15:
+                    return {"pose": "YURUYOR", "threat": False, "detail": "Yurume hareketi"}
+
+        # ---- 7. Normal ayakta ----
         return {"pose": "AYAKTA", "threat": False, "detail": "Normal durus"}
 
 
 # ============================================================
-# MODUL 6: TEHDIT DEGERLENDIRME (GELISMIS)
+# MODUL 6: OLLAMA SAHNE ANALIZI
+# ============================================================
+
+class OllamaAnalyzer:
+    """Ollama ile sahne yorumlama (opsiyonel).
+
+    Kurulu ise localhost:11434 uzerinden LLM ile sahne analizi yapar.
+    Her 5 saniyede bir frame gonderip askeri yorum alir.
+    """
+
+    def __init__(self, model="llava"):
+        self.available = False
+        self.model = model
+        self.last_analysis = ""
+        self.last_time = 0
+        self.interval = 5  # 5 saniyede bir analiz
+        self._check_connection()
+
+    def _check_connection(self):
+        """Ollama sunucusunu kontrol et."""
+        try:
+            import urllib.request
+            req = urllib.request.Request("http://localhost:11434/api/tags")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                if resp.status == 200:
+                    self.available = True
+                    print(f"[OLLAMA] Baglanti basarili, model: {self.model}")
+                    return
+        except Exception:
+            pass
+        print("[OLLAMA] Sunucu bulunamadi (localhost:11434). --ollama devre disi.")
+        self.available = False
+
+    def analyze_scene(self, frame, tracks_summary):
+        """Sahneyi analiz et (her 5sn'de bir)."""
+        if not self.available:
+            return self.last_analysis
+
+        now = time.time()
+        if now - self.last_time < self.interval:
+            return self.last_analysis
+
+        self.last_time = now
+
+        try:
+            import base64
+            import json
+            import urllib.request
+
+            # Frame'i JPEG'e cevir ve base64 encode et
+            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+            img_b64 = base64.b64encode(buffer).decode('utf-8')
+
+            prompt = (
+                f"Bu bir askeri gozetleme kamerasi goruntusu. "
+                f"Tespit edilen objeler: {tracks_summary}. "
+                f"Sahneyi kisa ve onemli bir askeri yorum olarak ozetle (1-2 cumle, Turkce)."
+            )
+
+            payload = json.dumps({
+                "model": self.model,
+                "prompt": prompt,
+                "images": [img_b64],
+                "stream": False,
+            }).encode('utf-8')
+
+            req = urllib.request.Request(
+                "http://localhost:11434/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode('utf-8'))
+                self.last_analysis = result.get("response", "").strip()[:200]
+
+        except Exception:
+            pass  # Sessizce atla, FPS'i dusurme
+
+        return self.last_analysis
+
+
+# ============================================================
+# MODUL 7: TEHDIT DEGERLENDIRME (GELISMIS)
 # ============================================================
 
 def assess_threat_advanced(tracks, depth_estimator, depth_map, frame_shape, frame_center_x):
@@ -1145,104 +1335,95 @@ class MilitaryHUD:
     HIDDEN_CLASSES = {"Fire", "Smoke", "Bird", "fire", "smoke", "bird"}
 
     def _draw_track_box(self, frame, tid, track, frame_h, frame_w):
-        """Tek track kutusunu ciz (ID, hiz, mesafe, iz)."""
+        """Tek track kutusunu ciz — temiz, kompakt."""
         x1, y1, x2, y2 = track["box"]
         cls = track["cls_name"]
 
         # Gizli siniflar icin kutu cizme
         if cls in self.HIDDEN_CLASSES:
             return
-        conf = track["conf"]
         color = COLORS.get(cls, (255, 255, 255))
 
-        # Tehdit seviyesine gore kutu kalinligi
-        thickness = 3 if track.get("threat_score", 0) >= 4 else 2
+        # Tehdit seviyesine gore kutu kalinligi (1px normal, 2px tehdit)
+        is_threat = track.get("threat_score", 0) >= 4
+        thickness = 2 if is_threat else 1
 
         # Ana kutu
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
-        # Kose isareti
-        corner = 12
+        # Kose isareti (8px, ince)
+        corner = 8
+        ct = 2 if is_threat else 1
         for (px, py, dx, dy) in [
             (x1, y1, 1, 1), (x2, y1, -1, 1),
             (x1, y2, 1, -1), (x2, y2, -1, -1)
         ]:
-            cv2.line(frame, (px, py), (px + dx*corner, py), color, 3)
-            cv2.line(frame, (px, py), (px, py + dy*corner), color, 3)
+            cv2.line(frame, (px, py), (px + dx*corner, py), color, ct + 1)
+            cv2.line(frame, (px, py), (px, py + dy*corner), color, ct + 1)
 
-        # --- Ust etiket ---
-        # ID + Sinif + Guven
-        label = f"#{tid} {cls} {conf:.0%}"
-        (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-        cv2.rectangle(frame, (x1, y1 - lh - 10), (x1 + lw + 6, y1), color, -1)
-        cv2.putText(frame, label, (x1 + 3, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+        # --- Ust etiket: sadece #ID SinifAdi (confidence YOK) ---
+        label = f"#{tid} {cls}"
+        (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+        cv2.rectangle(frame, (x1, y1 - lh - 6), (x1 + lw + 4, y1), color, -1)
+        cv2.putText(frame, label, (x1 + 2, y1 - 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1)
 
-        # --- Alt bilgi ---
-        info_y = y2 + 14
-
-        # Mesafe
+        # --- Alt bilgi: kompakt tek satir ---
+        info_parts = []
         dist = track.get("distance_m")
         if dist and dist < 500:
-            cv2.putText(frame, f"{dist:.0f}m", (x1, info_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-            info_y += 14
-
-        # Hiz (m/s)
+            info_parts.append(f"{dist:.0f}m")
         speed = track.get("speed_mps", 0)
         if speed > 0.5:
-            cv2.putText(frame, f"{speed:.1f} m/s", (x1, info_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-            info_y += 14
-
-        # ETA (kac saniyede gelir)
+            info_parts.append(f"{speed:.1f}m/s")
         eta = track.get("eta_seconds")
         if eta and eta < 300:
-            eta_color = (0, 0, 255) if eta < 10 else (0, 140, 255) if eta < 30 else color
-            cv2.putText(frame, f"ETA: {eta:.0f}sn", (x1, info_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, eta_color, 1)
-            info_y += 14
+            info_parts.append(f"ETA:{eta:.0f}s")
 
-        # Alt sinif (tank modeli vs)
-        sub = track.get("sub_class")
-        if sub:
-            cv2.putText(frame, f"{sub['model']} ({sub['conf']:.0%})", (x1, info_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-            info_y += 14
+        if info_parts:
+            info_text = " | ".join(info_parts)
+            info_color = (0, 0, 255) if (eta and eta < 10) else color
+            cv2.putText(frame, info_text, (x1, y2 + 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, info_color, 1)
 
-        # Drone spesifik bilgiler
-        if cls == "Drone":
-            height = track.get("height_m")
-            if height:
-                cv2.putText(frame, f"H:{height:.0f}m", (x1, info_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-                info_y += 14
+        # --- Ozel bilgiler (sadece gerektiginde) ---
+        extra_y = y2 + 24
 
-            if track.get("approaching"):
-                cv2.putText(frame, ">>> YAKLASIYOR <<<", (x1, info_y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
+        # Drone yaklasma uyarisi
+        if cls == "Drone" and track.get("approaching"):
+            cv2.putText(frame, "YAKLASIYOR", (x1, extra_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 0, 255), 1)
+            extra_y += 12
 
-        # Tank namlu yonu
+        # Tank namlu yonu (sadece HEDEF ise goster)
         if cls == "Tank":
             direction = _check_barrel_direction(track["box"], {}, frame_w // 2)
-            dir_color = (0, 0, 255) if direction == "HEDEF" else (0, 200, 200)
-            cv2.putText(frame, f"Namlu: {direction}", (x1, info_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, dir_color, 1)
+            if direction == "HEDEF":
+                cv2.putText(frame, "NAMLU->HEDEF", (x1, extra_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 0, 255), 1)
 
-        # Pose bilgisi
+        # Pose bilgisi (insan davranisi)
         if cls in ("Human", "Soldier", "Civilian") and track.get("pose_info"):
             pose = track["pose_info"]
-            pose_color = (0, 0, 255) if pose.get("threat") else (0, 255, 0)
-            cv2.putText(frame, f"Poz: {pose['pose']}", (x1, info_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, pose_color, 1)
+            pose_text = pose["pose"]
+            pose_color = (0, 0, 255) if pose.get("threat") else (0, 200, 200)
+            cv2.putText(frame, pose_text, (x1, extra_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, pose_color, 1)
 
-        # Iz ciz (trail)
+        # Alt sinif (sadece varsa)
+        sub = track.get("sub_class")
+        if sub:
+            cv2.putText(frame, sub["model"], (x1, extra_y + 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 255, 255), 1)
+
+        # Iz ciz (trail) — son 15 nokta
         positions = list(track.get("positions", []))
-        if len(positions) > 2:
-            for i in range(1, len(positions)):
-                alpha = i / len(positions)
-                pt1 = (int(positions[i-1][0]), int(positions[i-1][1]))
-                pt2 = (int(positions[i][0]), int(positions[i][1]))
+        trail_pts = positions[-15:]
+        if len(trail_pts) > 2:
+            for i in range(1, len(trail_pts)):
+                alpha = i / len(trail_pts)
+                pt1 = (int(trail_pts[i-1][0]), int(trail_pts[i-1][1]))
+                pt2 = (int(trail_pts[i][0]), int(trail_pts[i][1]))
                 trail_color = tuple(int(c * alpha) for c in color)
                 cv2.line(frame, pt1, pt2, trail_color, 1)
 
@@ -1421,39 +1602,41 @@ class MilitaryHUD:
 # ANA INFERENCE DONGUSU
 # ============================================================
 
-# Sinif bazli minimum confidence esikleri
-# Karistirilmasi kolay siniflar icin yuksek esik
+# Tracker'a bile sokulmayacak siniflar (HUD'da gosterilmez, takip edilmez)
+IGNORED_CLASSES = {"Fire", "Smoke", "Bird", "fire", "smoke", "bird"}
+
+# Sinif bazli minimum confidence esikleri (yukseltildi)
 CLASS_CONF_THRESHOLDS = {
-    "Drone": 0.45,
-    "Tank": 0.40,
-    "Aircraft": 0.45,
-    "Bird": 0.50,
-    "Human": 0.35,
-    "Soldier": 0.35,
-    "Civilian": 0.35,
-    "Vehicle": 0.35,
-    "Weapon": 0.40,
-    "Rifle": 0.40,
-    "Pistol": 0.45,
-    "Barrel": 0.40,
-    "Smoke": 0.40,
-    "Fire": 0.40,
-    "Explosion": 0.45,
+    "Drone": 0.55,
+    "Tank": 0.50,
+    "Aircraft": 0.55,
+    "Bird": 0.60,
+    "Human": 0.45,
+    "Soldier": 0.45,
+    "Civilian": 0.45,
+    "Vehicle": 0.40,
+    "Weapon": 0.50,
+    "Rifle": 0.50,
+    "Pistol": 0.50,
+    "Barrel": 0.50,
+    "Smoke": 0.50,
+    "Fire": 0.50,
+    "Explosion": 0.55,
 }
 
 # Fiziksel boyut kurallari: (min_area, max_area, min_aspect, max_aspect)
 # aspect = width / height
 CLASS_SIZE_RULES = {
-    "Drone":    (200,   50000,  0.3,  5.0),   # Kucuk-orta, kare-yatay
-    "Tank":     (5000,  500000, 1.0,  5.0),   # Buyuk, yatay
-    "Human":    (1000,  200000, 0.2,  0.9),   # Dikey (uzun, dar)
-    "Soldier":  (1000,  200000, 0.2,  0.9),   # Dikey
-    "Civilian": (1000,  200000, 0.2,  0.9),   # Dikey
-    "Vehicle":  (3000,  500000, 0.8,  5.0),   # Buyuk, yatay
-    "Aircraft": (8000,  800000, 0.5,  5.0),   # Cok buyuk
-    "Bird":     (50,    5000,   0.3,  4.0),   # Cok kucuk
-    "Rifle":    (500,   30000,  1.5,  10.0),  # Yatay (uzun, ince)
-    "Pistol":   (200,   15000,  0.5,  3.0),   # Kucuk
+    "Drone":    (300,   40000,  0.3,  4.0),   # Kucuk-orta, kare-yatay
+    "Tank":     (8000,  500000, 1.0,  4.5),   # Buyuk, yatay (min arttirildi)
+    "Human":    (1500,  200000, 0.2,  1.0),   # Dikey (uzun, dar)
+    "Soldier":  (1500,  200000, 0.2,  1.0),   # Dikey
+    "Civilian": (1500,  200000, 0.2,  1.0),   # Dikey
+    "Vehicle":  (4000,  500000, 0.8,  4.5),   # Buyuk, yatay
+    "Aircraft": (10000, 800000, 0.5,  5.0),   # Cok buyuk (min arttirildi)
+    "Bird":     (50,    3000,   0.3,  4.0),   # Cok kucuk (max dusuruldu)
+    "Rifle":    (800,   30000,  1.5,  10.0),  # Yatay (uzun, ince)
+    "Pistol":   (300,   15000,  0.5,  3.0),   # Kucuk
 }
 
 
@@ -1473,6 +1656,11 @@ def fix_drone_confusion(detections):
     for det in detections:
         cls = det["cls_name"]
         conf = det["conf"]
+
+        # --- 0. IGNORED_CLASSES: tracker'a bile girmesin ---
+        if cls in IGNORED_CLASSES:
+            continue
+
         x1, y1, x2, y2 = det["box"]
         w = x2 - x1
         h = y2 - y1
@@ -1650,6 +1838,13 @@ def run_inference(args):
     hud = MilitaryHUD()
     print("[OK] Military HUD")
 
+    # 7. Ollama (opsiyonel)
+    ollama = None
+    if args.ollama:
+        ollama = OllamaAnalyzer(model=args.ollama_model)
+        if ollama.available:
+            print(f"[OK] Ollama Sahne Analizi ({args.ollama_model})")
+
     print("--- TUM MODULLER HAZIR ---\n")
 
     # ---- Source ----
@@ -1660,7 +1855,7 @@ def run_inference(args):
     # Ekran yakalama modu
     if str(source).lower() == "screen":
         _run_screen(model, class_names, tracker, depth_estimator,
-                    sub_classifier, sahi_detector, pose_analyzer, hud, args)
+                    sub_classifier, sahi_detector, pose_analyzer, hud, ollama, args)
         return
 
     if source != 0 and not Path(str(source)).exists():
@@ -1673,14 +1868,14 @@ def run_inference(args):
 
     if is_video:
         _run_video(source, model, class_names, tracker, depth_estimator,
-                   sub_classifier, sahi_detector, pose_analyzer, hud, args)
+                   sub_classifier, sahi_detector, pose_analyzer, hud, ollama, args)
     else:
         _run_image(source, model, class_names, tracker, depth_estimator,
                    sub_classifier, sahi_detector, pose_analyzer, hud, args)
 
 
 def _run_screen(model, class_names, tracker, depth_estimator,
-                sub_classifier, sahi_detector, pose_analyzer, hud, args):
+                sub_classifier, sahi_detector, pose_analyzer, hud, ollama, args):
     """Ekran yakalama modu - ekrani canli izleyip tespit yapar."""
     import mss
 
@@ -1731,7 +1926,7 @@ def _run_screen(model, class_names, tracker, depth_estimator,
             last_detections = fix_drone_confusion(last_detections)
 
             # Tracker guncelle
-            tracker.update(last_detections, curr_time)
+            tracker.update(last_detections, curr_time, frame)
 
         # ---- DEPTH ----
         depth_map = None
@@ -1762,7 +1957,7 @@ def _run_screen(model, class_names, tracker, depth_estimator,
 
             if pose_analyzer and track["cls_name"] in ("Human", "Soldier", "Civilian"):
                 if frame_count % 5 == 0:
-                    pose = pose_analyzer.analyze(frame, track["box"])
+                    pose = pose_analyzer.analyze(frame, track["box"], track_id=tid)
                     track["pose_info"] = pose
 
         # ---- TEHDIT DEGERLENDIRME ----
@@ -1781,6 +1976,16 @@ def _run_screen(model, class_names, tracker, depth_estimator,
             )
             depth_vis = cv2.resize(depth_vis, (w, h))
             frame = cv2.addWeighted(frame, 0.6, depth_vis, 0.4, 0)
+
+        # ---- OLLAMA SAHNE ANALIZI ----
+        ollama_text = ""
+        if ollama and ollama.available:
+            summary = ", ".join(f"{t['cls_name']}#{tid}" for tid, t in confirmed.items())
+            ollama_text = ollama.analyze_scene(frame, summary or "bos sahne")
+            if ollama_text:
+                # Ollama yorumunu ust orta bolgeye yaz
+                cv2.putText(frame, ollama_text[:80], (10, h - 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 255), 1)
 
         hud.draw_all(frame, confirmed, threat_level, threat_sources,
                      fps_display, frame_count, depth_map)
@@ -1805,7 +2010,7 @@ def _run_screen(model, class_names, tracker, depth_estimator,
 
 
 def _run_video(source, model, class_names, tracker, depth_estimator,
-               sub_classifier, sahi_detector, pose_analyzer, hud, args):
+               sub_classifier, sahi_detector, pose_analyzer, hud, ollama, args):
     """Video/webcam inference."""
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
@@ -1871,7 +2076,7 @@ def _run_video(source, model, class_names, tracker, depth_estimator,
             last_detections = fix_drone_confusion(last_detections)
 
             # ---- TRACKER GUNCELLE ----
-            tracker.update(last_detections, curr_time)
+            tracker.update(last_detections, curr_time, frame)
 
         # ---- DEPTH ----
         depth_map = None
@@ -1906,7 +2111,7 @@ def _run_video(source, model, class_names, tracker, depth_estimator,
             # Pose analizi
             if pose_analyzer and track["cls_name"] in ("Human", "Soldier", "Civilian"):
                 if frame_count % 5 == 0:  # Her 5 frame'de bir
-                    pose = pose_analyzer.analyze(frame, track["box"])
+                    pose = pose_analyzer.analyze(frame, track["box"], track_id=tid)
                     track["pose_info"] = pose
 
         # ---- TEHDIT DEGERLENDIRME ----
@@ -1926,6 +2131,14 @@ def _run_video(source, model, class_names, tracker, depth_estimator,
             )
             depth_vis = cv2.resize(depth_vis, (w, h))
             frame = cv2.addWeighted(frame, 0.6, depth_vis, 0.4, 0)
+
+        # ---- OLLAMA SAHNE ANALIZI ----
+        if ollama and ollama.available:
+            summary = ", ".join(f"{t['cls_name']}#{tid}" for tid, t in confirmed.items())
+            ollama_text = ollama.analyze_scene(frame, summary or "bos sahne")
+            if ollama_text:
+                cv2.putText(frame, ollama_text[:80], (10, h - 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 255), 1)
 
         hud.draw_all(frame, confirmed, threat_level, threat_sources,
                      fps_display, frame_count, depth_map)
@@ -1991,7 +2204,7 @@ def _run_image(source, model, class_names, tracker, depth_estimator,
     detections = fix_drone_confusion(detections)
 
     # Tracker
-    tracker.update(detections, curr_time)
+    tracker.update(detections, curr_time, frame)
     confirmed = tracker.get_confirmed_tracks()
     # Resimde min_hits=1 olsun
     confirmed = tracker.tracks
@@ -2059,6 +2272,10 @@ def main():
                         help="Pose estimation aktif")
     parser.add_argument("--output", type=str, default=None,
                         help="Video kayit dosyasi (.mp4)")
+    parser.add_argument("--ollama", action="store_true",
+                        help="Ollama sahne analizi (localhost:11434)")
+    parser.add_argument("--ollama-model", type=str, default="llava",
+                        help="Ollama model adi (default: llava)")
     args = parser.parse_args()
 
     run_inference(args)

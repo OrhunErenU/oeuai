@@ -4,7 +4,7 @@
 #include <vector>
 #include <memory>
 #include <opencv2/opencv.hpp>
-#include <NvInfer.h>
+#include <onnxruntime_cxx_api.h>
 
 namespace tv {
 
@@ -16,23 +16,13 @@ struct Detection {
     std::string class_name;
 };
 
-// Custom TensorRT logger
-class TRTLogger : public nvinfer1::ILogger {
-public:
-    void log(Severity severity, const char* msg) noexcept override;
-};
-
 class Detector {
 public:
     Detector();
     ~Detector();
 
-    // Load TensorRT engine from file
-    bool load_engine(const std::string& engine_path);
-
-    // Build engine from ONNX model
-    bool build_engine(const std::string& onnx_path, const std::string& engine_path,
-                      bool fp16 = true);
+    // Load ONNX model (GPU if available, else CPU)
+    bool load(const std::string& onnx_path, bool use_gpu = true);
 
     // Run inference
     std::vector<Detection> detect(const cv::Mat& frame, float conf_thresh = 0.3f,
@@ -43,32 +33,29 @@ public:
 
     int input_width() const { return input_w_; }
     int input_height() const { return input_h_; }
+    bool is_loaded() const { return session_ != nullptr; }
 
 private:
-    // Preprocess image for YOLO
-    cv::Mat preprocess(const cv::Mat& frame);
+    cv::Mat preprocess(const cv::Mat& frame, float& scale, float& pad_x, float& pad_y);
 
-    // Post-process YOLO output
-    std::vector<Detection> postprocess(float* output, int output_size,
+    std::vector<Detection> postprocess(float* output, int num_dets,
                                         float conf_thresh, float iou_thresh,
-                                        float scale_x, float scale_y,
-                                        float pad_x, float pad_y);
+                                        float scale, float pad_x, float pad_y);
 
-    // NMS
     void nms(std::vector<Detection>& detections, float iou_thresh);
 
-    TRTLogger logger_;
-    std::unique_ptr<nvinfer1::IRuntime> runtime_;
-    std::unique_ptr<nvinfer1::ICudaEngine> engine_;
-    std::unique_ptr<nvinfer1::IExecutionContext> context_;
+    std::unique_ptr<Ort::Env> env_;
+    std::unique_ptr<Ort::Session> session_;
+    Ort::AllocatorWithDefaultOptions allocator_;
 
-    void* buffers_[2] = {nullptr, nullptr}; // GPU buffers [input, output]
-    int input_idx_ = 0;
-    int output_idx_ = 1;
+    std::vector<const char*> input_names_;
+    std::vector<const char*> output_names_;
+    std::vector<std::string> input_names_str_;
+    std::vector<std::string> output_names_str_;
+
     int input_w_ = 640;
     int input_h_ = 640;
     int num_classes_ = 15;
-    int output_elements_ = 0;
 };
 
 } // namespace tv
